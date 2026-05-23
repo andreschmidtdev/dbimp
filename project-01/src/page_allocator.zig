@@ -1,0 +1,74 @@
+const std = @import("std");
+const Page = @import("page.zig").Page;
+
+pub const PageAllocatorError = error { 
+    InvalidFrameIndex,
+    FrameAlreadyFree,
+    };
+
+
+pub const PageAllocator = struct {
+    frame_count : usize,
+    pages : [] Page,
+    used : [] bool,
+    pub fn init(frame_count : usize, allocator : std.mem.Allocator) !PageAllocator {
+        const pages = try allocator.alloc(Page, frame_count);
+        errdefer allocator.free(pages);
+
+        const used = try allocator.alloc(bool, frame_count);
+        errdefer allocator.free(used);
+
+        return PageAllocator {
+            .frame_count = frame_count,
+            .pages = pages,
+            .used = used
+        };
+    }
+    pub fn deinit(self : *PageAllocator, allocator : std.mem.Allocator) void {
+        allocator.free(self.pages);
+        allocator.free(self.used);
+    }
+    pub fn allocFrame(self : *PageAllocator) !struct {frame_index : usize, page : *Page} {
+        // look for unused page
+        for (self.used,0..) |is_used,i| {
+            if(!is_used) {
+                self.used[i] = true;
+            }
+        // return index of unused page and pointer to it
+        return .{
+            .frame_index = i,
+            .page = &self.pages[i],
+        };
+        }
+    }
+
+    pub fn freeFrame(self: *PageAllocator, frame_index : usize) !void {
+        if(frame_index >= self.frame_count) {
+            return PageAllocatorError.InvalidFrameIndex;
+        }
+
+        if(!self.used[frame_index]) {
+            return PageAllocatorError.FrameAlreadyFree;
+        }
+        
+        self.used[frame_index] = false;
+    }
+};
+
+
+// Tests
+test "PageAllocator creates N free frames" {
+        var debug_allocator: std.heap.DebugAllocator(.{}) = .init;
+        defer _ = debug_allocator.deinit();
+        const allocator = debug_allocator.allocator();
+        var page_allocator = try PageAllocator.init(@as(usize,64),allocator);
+        defer page_allocator.deinit(debug_allocator);
+        
+        try std.testing.expectEqual(@as(usize,64), page_allocator.pages.len);
+        try std.testing.expectEqual(@as(usize,64), page_allocator.used.len);
+        try std.testing.expectEqual(@as(usize,64), page_allocator.frame_count);
+        for(page_allocator.used) |is_used| {
+        try std.testing.expect(!is_used);
+        }
+
+}

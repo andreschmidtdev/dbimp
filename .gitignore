@@ -1,3 +1,8 @@
 .zig-cache/
 zig-out/
 *.o
+
+notes/*
+*.txt
+*.pdf
+backup_*
