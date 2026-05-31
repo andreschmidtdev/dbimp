@@ -1,18 +1,23 @@
 const Page = @import("page.zig").Page;
 const std = @import("std");
 const PageAllocator = @import("page_allocator.zig").PageAllocator;
+const PFNTable = @import("pfn_table.zig").PFNTable;
 const default_frame_count = 64;
+const default_disk_count = 64;
 
 pub const BufferManager = struct {
     page_allocator : PageAllocator,
+    pfn_table : PFNTable,
     
-    pub fn init(allocator:std.mem.Allocator) !BufferManager {
+    pub fn init(allocator : std.mem.Allocator) !BufferManager {
        return BufferManager {
-            .page_allocator = try PageAllocator.init(default_frame_count,allocator)
+            .page_allocator = try PageAllocator.init(default_frame_count,allocator),
+            .pfn_table = try PFNTable.init(default_disk_count,allocator),
         }; 
     }
     pub fn deinit(self : *BufferManager, allocator : std.mem.Allocator) void {
         self.page_allocator.deinit(allocator);
+        self.pfn_table.deinit(allocator);
     }
 
 };
