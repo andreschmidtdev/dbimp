@@ -25,10 +25,22 @@ pub const PageAllocator = struct {
             .used = used
         };
     }
+
     pub fn deinit(self : *PageAllocator, allocator : std.mem.Allocator) void {
         allocator.free(self.pages);
         allocator.free(self.used);
     }
+
+    pub fn full(self: *PageAllocator) bool {
+        
+        for(self.used) |is_used| {
+            if (!is_used) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     pub fn allocFrame(self : *PageAllocator) !struct {frame_index : usize, page : *Page} {
         // look for unused page
         for (self.used,0..) |is_used,i| {
@@ -43,6 +55,13 @@ pub const PageAllocator = struct {
         }
         return PageAllocatorError.PageAllocatorIsFull;
  
+    }
+    pub fn getFrame(self: *PageAllocator, frame_index: usize) !*Page {
+        if (frame_index >= self.pages.len) {
+            return PageAllocatorError.InvalidFrameIndex;
+        }
+
+        return &self.pages[frame_index];
     }
 
     pub fn freeFrame(self: *PageAllocator, frame_index : usize) !void {

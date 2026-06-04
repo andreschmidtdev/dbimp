@@ -2,7 +2,11 @@ const std = @import("std");
 
 pub const PFNTableError = error {
     PfnOutOfBounds,
-    PfnWrongAssumedLocation
+    PfnWrongAssumedLocation,
+    PfnStillPinned,
+    PfnStillDirty,
+    PfnPinCountAlreadyZero,
+    PfnTableFull,
 };
 
 pub const PFNState = enum {
@@ -13,7 +17,9 @@ pub const PFNState = enum {
 
 pub const PFNEntry = struct {
     state : PFNState,
-    location : usize
+    location : usize,
+    dirty : bool,
+    pin_count : usize,
 };
 
 pub const PFNTable = struct {
@@ -27,6 +33,8 @@ pub const PFNTable = struct {
             entry.* = .{
                 .state = .not_allocated,
                 .location = 0, // probably cleaner way to do this in zig but for now assign 0
+                .dirty = false,
+                .pin_count = 0,
             };
         }
         return PFNTable {
@@ -36,37 +44,77 @@ pub const PFNTable = struct {
     pub fn deinit (self : *PFNTable, allocator : std.mem.Allocator) void {
        allocator.free(self.pfn_entries);
     }
-
+    //helper
     fn checkBounds(self : *PFNTable, pfn : usize) !void {
         if(pfn >= self.pfn_entries.len) {
             return PFNTableError.PfnOutOfBounds;
         }
     }
 
+    fn checkInMemory(self : *PFNTable, pfn : usize) !void {
+        if(self.pfn_entries[pfn].state != .in_memory) {
+            return PFNTableError.PfnWrongAssumedLocation;
+        }
+    }
+    fn checkOnDisk(self: *PFNTable, pfn: usize) !void {
+
+        if (self.pfn_entries[pfn].state != .on_disk) {
+            return PFNTableError.PfnWrongAssumedLocation;
+        }
+    }
+
+    fn checkNotPinned(self: *PFNTable, pfn: usize) !void {
+
+        if (self.pfn_entries[pfn].pin_count != 0) {
+            return PFNTableError.PfnStillPinned;
+        }
+    }
+
+    fn checkNotDirty(self: *PFNTable, pfn: usize) !void {
+
+        if (self.pfn_entries[pfn].dirty) {
+            return PFNTableError.PfnStillDirty;
+        }
+    }
+    // api
     pub fn getEntry(self : *PFNTable, pfn : usize) !PFNEntry {
         try self.checkBounds(pfn);
         return self.pfn_entries[pfn];
     }
+    pub fn findFreePFN(self : *PFNTable) !usize {
+        for (self.pfn_entries,0..) |entry,index| {
+            if(entry.state == .not_allocated) {
+                return index;
+            }
+        }
+        return PFNTableError.PfnTableFull; // for now until eviction logic is implemented
+    }
     pub fn markInMemory(self : *PFNTable, pfn : usize, frame_index : usize) !void {
         try self.checkBounds(pfn);
-        self.pfn_entries[pfn] = .{
-            .state = .in_memory,
-            .location = frame_index,
-        };
+
+        self.pfn_entries[pfn].state = .in_memory;
+        self.pfn_entries[pfn].location = frame_index;
     }
-    pub fn markOnDisk(self : *PFNTable, pfn : usize, disk_location : usize) !void {
+    pub fn markOnDisk(self : *PFNTable, pfn : usize) !void {
         try self.checkBounds(pfn);
-        self.pfn_entries[pfn] = .{
-            .state = .on_disk,
-            .location = disk_location,
-        };
+        try self.checkNotPinned(pfn);
+        try self.checkNotDirty(pfn);
+        
+        self.pfn_entries[pfn].state = .on_disk;
+        self.pfn_entries[pfn].location = pfn;
     }
+
     pub fn markNotAllocated(self : *PFNTable, pfn : usize) !void {
         try self.checkBounds(pfn);
-        self.pfn_entries[pfn] = .{
-            .state = .not_allocated,
-            .location = 0,
-        };
+        try self.checkNotDirty(pfn);
+        try self.checkNotPinned(pfn);
+        
+        if (self.pfn_entries[pfn].dirty) {
+            return PFNTableError.PfnStillDirty;
+        }
+        
+        self.pfn_entries[pfn].state = .not_allocated;
+        self.pfn_entries[pfn].location = 0;
     }
     pub fn getFrameNumber(self : *PFNTable, pfn : usize) !usize {
         try self.checkBounds(pfn);
@@ -83,6 +131,47 @@ pub const PFNTable = struct {
             return PFNTableError.PfnWrongAssumedLocation;
         }
         return self.pfn_entries[pfn].location;
+    }
+    
+    pub fn markDirty(self : *PFNTable, pfn : usize) !void {
+        try self.checkBounds(pfn);
+        if (self.pfn_entries[pfn].state != .in_memory) {
+            return PFNTableError.PfnWrongAssumedLocation;
+        }
+        self.pfn_entries[pfn].dirty = true;
+    }
+
+    pub fn clearDirty(self : *PFNTable, pfn : usize) !void {
+        try self.checkBounds(pfn);
+        try self.checkInMemory(pfn);
+        self.pfn_entries[pfn].dirty = false;
+    }
+
+    pub fn incrementPinCount(self : *PFNTable, pfn : usize) !void {
+        try self.checkBounds(pfn);
+        try self.checkInMemory(pfn);
+        self.pfn_entries[pfn].pin_count += 1;
+    }
+
+    pub fn decrementPinCount(self : *PFNTable, pfn : usize) !void {
+        try self.checkBounds(pfn);
+        try self.checkInMemory(pfn);
+        if (self.pfn_entries[pfn].pin_count == 0) {
+            return PFNTableError.PfnPinCountAlreadyZero;
+        }
+        self.pfn_entries[pfn].pin_count -= 1;
+    }
+    
+    pub fn getPinCount(self : *PFNTable, pfn : usize) !usize {
+        try self.checkBounds(pfn);
+        try self.checkInMemory(pfn);
+        return self.pfn_entries[pfn].pin_count;
+    }
+
+    pub fn isDirty(self : *PFNTable, pfn : usize) !bool {
+        try self.checkBounds(pfn);
+        try self.checkInMemory(pfn);
+        return self.pfn_entries[pfn].dirty;
     }
 };
 
@@ -113,7 +202,7 @@ test "Marks pfn as in memory correctly" {
 
     const allocator = debug_allocator.allocator();
     const page_count = 4;
-    const dummy_entry = 1;
+    const dummy_entry : usize = 1;
 
     var table = try PFNTable.init(page_count,allocator);
     defer table.deinit(allocator);
@@ -135,7 +224,7 @@ test "Marks pfn as in on disk correctly" {
     var table = try PFNTable.init(page_count,allocator);
     defer table.deinit(allocator);
 
-    try table.markOnDisk(dummy_entry, dummy_entry);
+    try table.markOnDisk(dummy_entry);
     const entry = try table.getEntry(dummy_entry);
     try std.testing.expectEqual(.on_disk,entry.state);
     try std.testing.expectEqual(dummy_entry,entry.location);
@@ -171,7 +260,7 @@ test "getFrameNumber fails if PFN is not in memory" {
     var table = try PFNTable.init(page_count,allocator);
     defer table.deinit(allocator);
 
-    try table.markOnDisk(1,1);
+    try table.markOnDisk(1);
     try std.testing.expectError(PFNTableError.PfnWrongAssumedLocation, table.getFrameNumber(1));
 }
 test "getDiskLoc fails if PFN is not on disk" {

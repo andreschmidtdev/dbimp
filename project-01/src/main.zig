@@ -13,7 +13,7 @@ pub fn main() !void {
     const allocator = debug_allocator.allocator();
 
     var buffer_manager = try BufferManager.init(allocator);
-    defer buffer_manager.deinit(allocator);
+    defer buffer_manager.deinit();
 
     std.debug.print("BufferManager initialized with {} frames\n", .{
         buffer_manager.page_allocator.frame_count,
