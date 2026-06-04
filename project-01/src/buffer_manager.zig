@@ -18,15 +18,7 @@ pub const BufferManager = struct {
     pfn_table: PFNTable,
     disk_manager : DiskManager,
 
-    pub fn init(allocator: std.mem.Allocator) !BufferManager {
-        return try BufferManager.initWithSizes(
-            allocator,
-            default_frame_count,
-            default_disk_page_count,
-        );
-    }
-        
-    pub fn initWithSizes(
+    pub fn init(
         allocator: std.mem.Allocator,
         frame_count: usize,
         disk_page_count: usize,
@@ -212,7 +204,7 @@ test "PFNToPage returns existing page and increments pin count" {
 
     const allocator = debug_allocator.allocator();
 
-    var bm = try BufferManager.initWithSizes(allocator,8,8);
+    var bm = try BufferManager.init(allocator,8,8);
     defer bm.deinit();
 
     const allocated = try bm.AllocPageFrame();
@@ -235,7 +227,7 @@ test "AllocPageFrame evicts released dirty pages and PFNToPage reloads them" {
     const allocator = debug_allocator.allocator();
 
     // Only 2 memory frames, but 4 possible disk pages.
-    var bm = try BufferManager.initWithSizes(allocator, 2, 4);
+    var bm = try BufferManager.init(allocator, 2, 4);
     defer bm.deinit();
 
     const p0 = try bm.AllocPageFrame();
