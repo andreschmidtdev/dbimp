@@ -20,11 +20,19 @@ pub const PFNEntry = struct {
     location : usize,
     dirty : bool,
     pin_count : usize,
+
+    // LRU stuff
+    prev : ?usize,
+    next : ?usize,
 };
 
 pub const PFNTable = struct {
 
     pfn_entries : [] PFNEntry,
+
+    //LRU stuff
+    head : ?usize,
+    tail : ?usize,
    
    pub fn init (page_nums : usize, allocator : std.mem.Allocator )  !PFNTable {
          
@@ -35,10 +43,14 @@ pub const PFNTable = struct {
                 .location = 0, // probably cleaner way to do this in zig but for now assign 0
                 .dirty = false,
                 .pin_count = 0,
+                .next = null,
+                .prev = null,
             };
         }
         return PFNTable {
-            .pfn_entries = pfn_entries
+            .pfn_entries = pfn_entries,
+            .head = null,
+            .tail = null,
         };
     }
     pub fn deinit (self : *PFNTable, allocator : std.mem.Allocator) void {
@@ -80,6 +92,10 @@ pub const PFNTable = struct {
     pub fn getEntry(self : *PFNTable, pfn : usize) !PFNEntry {
         try self.checkBounds(pfn);
         return self.pfn_entries[pfn];
+    }
+    pub fn getEntryPtr(self: *PFNTable, pfn: usize) !*PFNEntry {
+        try self.checkBounds(pfn);
+        return &self.pfn_entries[pfn];
     }
     pub fn findFreePFN(self : *PFNTable) !usize {
         for (self.pfn_entries,0..) |entry,index| {
@@ -173,8 +189,59 @@ pub const PFNTable = struct {
         try self.checkInMemory(pfn);
         return self.pfn_entries[pfn].dirty;
     }
-};
 
+    pub fn lruAppend(self: *PFNTable, pfn: usize) !void {
+        try self.checkBounds(pfn);
+
+        const old_tail = self.tail;
+
+        const entry = try self.getEntryPtr(pfn);
+        entry.prev = old_tail;
+        entry.next = null;
+
+        if (old_tail) |tail_pfn| {
+            const tail_entry = try self.getEntryPtr(tail_pfn);
+            tail_entry.next = pfn;
+        } else {
+            self.head = pfn;
+        }
+
+        self.tail = pfn;
+    }
+
+    pub fn lruRemove(self: *PFNTable, pfn: usize) !void {
+        try self.checkBounds(pfn);
+
+        const entry = try self.getEntryPtr(pfn);
+
+        const prev = entry.prev;
+        const next = entry.next;
+
+        if (prev) |prev_pfn| {
+            const prev_entry = try self.getEntryPtr(prev_pfn);
+            prev_entry.next = next;
+        } else {
+            self.head = next;
+        }
+
+        if (next) |next_pfn| {
+            const next_entry = try self.getEntryPtr(next_pfn);
+            next_entry.prev = prev;
+        } else {
+            self.tail = prev;
+        }
+
+        entry.prev = null;
+        entry.next = null;
+    }
+    
+    pub fn lruTouch(self: *PFNTable, pfn: usize) !void {
+        if (self.tail == pfn) return;
+
+        try self.lruRemove(pfn);
+        try self.lruAppend(pfn);
+    } 
+};
 
 
 // testing

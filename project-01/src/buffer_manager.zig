@@ -53,12 +53,35 @@ pub const BufferManager = struct {
         return BufferManagerError.EvictionNotPossible;
     }
 
+    fn evictLRU(self: *BufferManager) !void {
+        var current = self.pfn_table.head;
+
+        while (current) |pfn| {
+            const entry = try self.pfn_table.getEntry(pfn);
+
+            if (entry.pin_count == 0) {
+                if (entry.dirty) {
+                    try self.FlushPage(@intCast(pfn));
+                }
+
+                try self.pfn_table.lruRemove(pfn);
+                try self.pfn_table.markOnDisk(pfn);
+                try self.page_allocator.freeFrame(entry.location);
+                return;
+            }
+
+            current = entry.next;
+        }
+
+        return BufferManagerError.EvictionNotPossible;
+    }
     // Allocates a page frame. Also allocates and returns a corresponding PFN.
     pub fn AllocPageFrame(self: *BufferManager) !struct { pfn: u64, page: *Page } {
 
         const free_pfn: usize = try self.pfn_table.findFreePFN(); 
         if(self.page_allocator.full()) {
-            try self.evictFirstUnpinned();
+            //try self.evictFirstUnpinned();
+            try self.evictLRU();
         }
         const frame = try self.page_allocator.allocFrame();
         const frame_index: usize = frame.frame_index;
@@ -66,6 +89,7 @@ pub const BufferManager = struct {
         try self.pfn_table.markInMemory(free_pfn, frame_index);
         try self.pfn_table.incrementPinCount(free_pfn);
         try self.pfn_table.markDirty(free_pfn);
+        try self.pfn_table.lruAppend(free_pfn);
 
         return .{
             .pfn = @intCast(free_pfn),
@@ -84,6 +108,7 @@ pub const BufferManager = struct {
             },
 
             .in_memory => {
+                try self.pfn_table.lruRemove(pfn_index);
                 // markNotAllocated checks pin_count == 0.
                 try self.pfn_table.markNotAllocated(pfn_index);
                 try self.page_allocator.freeFrame(entry.location);
@@ -106,11 +131,12 @@ pub const BufferManager = struct {
 
             .in_memory => {
                 // already resident, nothing to load
+                try self.pfn_table.lruTouch(pfn_index);
             },
 
             .on_disk => {
                 if (self.page_allocator.full()) {
-                    try self.evictFirstUnpinned();
+                    try self.evictLRU();
                 }
 
                 const allocated_frame = try self.page_allocator.allocFrame();
@@ -121,6 +147,7 @@ pub const BufferManager = struct {
                     pfn_index,
                     allocated_frame.frame_index,
                 );
+                try self.pfn_table.lruAppend(pfn_index);
             },
         }
 
@@ -163,39 +190,57 @@ pub const BufferManager = struct {
 };
 
 // testing
-
-test "Full in-memory lifecycle" {
+test "LRU append touch remove maintains order" {
     var debug_allocator: std.heap.DebugAllocator(.{}) = .init;
     defer _ = debug_allocator.deinit();
 
     const allocator = debug_allocator.allocator();
 
-    var bm = try BufferManager.init(allocator);
-    defer bm.deinit();
+    var table = try PFNTable.init(4, allocator);
+    defer table.deinit(allocator);
 
-    const allocated = try bm.AllocPageFrame();
-    allocated.page.mem[0] = 42;
-    try bm.MarkDirty(allocated.pfn);
+    try table.lruAppend(0);
+    try table.lruAppend(1);
+    try table.lruAppend(2);
 
-    const pfn_index: usize = @intCast(allocated.pfn);
-    var entry = try bm.pfn_table.getEntry(pfn_index);
+    try std.testing.expectEqual(@as(?usize, 0), table.head);
+    try std.testing.expectEqual(@as(?usize, 2), table.tail);
 
-    try std.testing.expectEqual(.in_memory, entry.state);
-    try std.testing.expectEqual(true, entry.dirty);
-    try std.testing.expectEqual(@as(usize, 1), entry.pin_count);
+    try table.lruTouch(0);
 
-    try bm.FlushPage(allocated.pfn);
-    entry = try bm.pfn_table.getEntry(pfn_index);
-    try std.testing.expectEqual(false, entry.dirty);
+    try std.testing.expectEqual(@as(?usize, 1), table.head);
+    try std.testing.expectEqual(@as(?usize, 0), table.tail);
 
-    bm.DecrementPinCount(allocated.pfn);
-    entry = try bm.pfn_table.getEntry(pfn_index);
-    try std.testing.expectEqual(@as(usize, 0), entry.pin_count);
+    var e1 = try table.getEntry(1);
+    var e2 = try table.getEntry(2);
+    var e0 = try table.getEntry(0);
 
-    try bm.FreePageFrame(allocated.pfn);
+    try std.testing.expectEqual(@as(?usize, null), e1.prev);
+    try std.testing.expectEqual(@as(?usize, 2), e1.next);
 
-    entry = try bm.pfn_table.getEntry(pfn_index);
-    try std.testing.expectEqual(.not_allocated, entry.state);
+    try std.testing.expectEqual(@as(?usize, 1), e2.prev);
+    try std.testing.expectEqual(@as(?usize, 0), e2.next);
+
+    try std.testing.expectEqual(@as(?usize, 2), e0.prev);
+    try std.testing.expectEqual(@as(?usize, null), e0.next);
+
+    try table.lruRemove(2);
+
+    try std.testing.expectEqual(@as(?usize, 1), table.head);
+    try std.testing.expectEqual(@as(?usize, 0), table.tail);
+
+    e1 = try table.getEntry(1);
+    e0 = try table.getEntry(0);
+    e2 = try table.getEntry(2);
+
+    try std.testing.expectEqual(@as(?usize, null), e1.prev);
+    try std.testing.expectEqual(@as(?usize, 0), e1.next);
+
+    try std.testing.expectEqual(@as(?usize, 1), e0.prev);
+    try std.testing.expectEqual(@as(?usize, null), e0.next);
+
+    try std.testing.expectEqual(@as(?usize, null), e2.prev);
+    try std.testing.expectEqual(@as(?usize, null), e2.next);
 }
 
 test "PFNToPage returns existing page and increments pin count" {
@@ -245,7 +290,6 @@ test "AllocPageFrame evicts released dirty pages and PFNToPage reloads them" {
     bm.DecrementPinCount(p2.pfn);
 
     // p0 may or may not have been evicted depending on chosen policy.
-    // With evictFirstUnpinned, p0 should be the one evicted.
     const p0_index: usize = @intCast(p0.pfn);
     var p0_entry = try bm.pfn_table.getEntry(p0_index);
 

@@ -16,7 +16,7 @@ pub fn main() !void {
     const thread_count = 16;
     const implemented_variants: enum { OnlySingleThreaded, MultiThreaded, MTAsync } = .OnlySingleThreaded;
     const verify = true;
-    const total_request_count = 1 << 8;
+    const total_request_count = 1 << 12;
 
     //const page_size = 1 << 12;
     const page_size = page.page_size;

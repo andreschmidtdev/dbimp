@@ -6,3 +6,5 @@ notes/*
 *.txt
 *.pdf
 backup_*
+data/*
+data
